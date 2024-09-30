@@ -120,32 +120,9 @@ public final class LicenseHeaderStep {
 	}
 
 	public FormatterStep build() {
-		FormatterStep formatterStep = null;
-
-		if (yearMode.get() == YearMode.SET_FROM_GIT) {
-			formatterStep = FormatterStep.createNeverUpToDateLazy(name, () -> {
-				boolean updateYear = false; // doesn't matter
-				Runtime runtime = new Runtime(headerLazy.get(), delimiter, yearSeparator, updateYear, skipLinesMatching);
-				return FormatterFunc.needsFile(runtime::setLicenseHeaderYearsFromGitHistory);
-			});
-		} else {
-			formatterStep = FormatterStep.createLazy(name, () -> {
-				// by default, we should update the year if the user is using ratchetFrom
-				boolean updateYear;
-				switch (yearMode.get()) {
-				case PRESERVE:
-					updateYear = false;
-					break;
-				case UPDATE_TO_TODAY:
-					updateYear = true;
-					break;
-				case SET_FROM_GIT:
-				default:
-					throw new IllegalStateException(yearMode.toString());
-				}
-				return new Runtime(headerLazy.get(), delimiter, yearSeparator, updateYear, skipLinesMatching);
-			}, step -> FormatterFunc.needsFile(step::format));
-		}
+		FormatterStep formatterStep = FormatterStep.createLazy(name, () -> {
+			return new Runtime(headerLazy.get(), delimiter, yearSeparator, yearMode.get(), skipLinesMatching);
+		}, step -> FormatterFunc.needsFile(step::format));
 
 		if (contentPattern == null) {
 			return formatterStep;
@@ -214,13 +191,14 @@ public final class LicenseHeaderStep {
 		private final @Nullable String beforeYear;
 		private final @Nullable String afterYear;
 		private final boolean updateYearWithLatest;
+		private final YearMode yearMode;
 		private final boolean licenseHeaderWithRange;
 		private final boolean hasFileToken;
 
 		private static final Pattern FILENAME_PATTERN = Pattern.compile("\\$FILE");
 
 		/** The license that we'd like enforced. */
-		private Runtime(String licenseHeader, String delimiter, String yearSeparator, boolean updateYearWithLatest, @Nullable String skipLinesMatching) {
+		private Runtime(String licenseHeader, String delimiter, String yearSeparator, YearMode yearMode, @Nullable String skipLinesMatching) {
 			if (delimiter.contains("\n")) {
 				throw new IllegalArgumentException("The delimiter must not contain any newlines.");
 			}
@@ -232,6 +210,7 @@ public final class LicenseHeaderStep {
 			this.delimiterPattern = Pattern.compile('^' + delimiter, Pattern.UNIX_LINES | Pattern.MULTILINE);
 			this.skipLinesMatching = skipLinesMatching == null ? null : Pattern.compile(skipLinesMatching);
 			this.hasFileToken = FILENAME_PATTERN.matcher(licenseHeader).find();
+			this.yearMode = yearMode;
 
 			Optional<String> yearToken = getYearToken(licenseHeader);
 			if (yearToken.isPresent()) {
@@ -240,7 +219,17 @@ public final class LicenseHeaderStep {
 				this.beforeYear = licenseHeader.substring(0, yearTokenIndex);
 				this.afterYear = licenseHeader.substring(yearTokenIndex + yearToken.get().length());
 				this.yearSepOrFull = yearSeparator;
-				this.updateYearWithLatest = updateYearWithLatest;
+				switch (yearMode) {
+				case PRESERVE:
+				case SET_FROM_GIT:
+					this.updateYearWithLatest = false;
+					break;
+				case UPDATE_TO_TODAY:
+					this.updateYearWithLatest = true;
+					break;
+				default:
+					throw new IllegalStateException(yearMode.toString());
+				}
 
 				boolean hasHeaderWithRange = false;
 				int yearPlusSep = 4 + yearSeparator.length();
@@ -272,7 +261,7 @@ public final class LicenseHeaderStep {
 		}
 
 		/** Formats the given string. */
-		private String format(String raw, File file) {
+		private String format(String raw, File file) throws IOException {
 			if (skipLinesMatching == null) {
 				return addOrUpdateLicenseHeader(raw, file);
 			} else {
@@ -297,8 +286,12 @@ public final class LicenseHeaderStep {
 			}
 		}
 
-		private String addOrUpdateLicenseHeader(String raw, File file) {
-			raw = replaceYear(raw);
+		private String addOrUpdateLicenseHeader(String raw, File file) throws IOException {
+			if (yearMode == YearMode.SET_FROM_GIT) {
+				raw = setLicenseHeaderYearsFromGitHistory(raw, file);
+			} else {
+				raw = replaceYear(raw);
+			}
 			raw = replaceFileName(raw, file);
 			return raw;
 		}
